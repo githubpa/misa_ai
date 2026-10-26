@@ -565,6 +565,7 @@
         let mqttClient = null;
         let isConnected = false;
         let isDeviceOnline = false;
+        let childLocalIp = null;
 
         // DOM elements
         const labelToken = document.getElementById('labelToken');
@@ -577,19 +578,30 @@
         const btnSaveModal = document.getElementById('btnSaveModal');
         const btnCancelModal = document.getElementById('btnCancelModal');
         const toastEl = document.getElementById('toast');
+        const btnRefresh = document.getElementById('btnRefresh');
 
-        // Init token from URL or LocalStorage
+        // Init token from URL or LocalStorage (Secure: No hardcoded token in public code!)
         function initDeviceToken() {
             const urlParams = new URLSearchParams(window.location.search);
             const tokenFromUrl = urlParams.get('device') || urlParams.get('token');
             if (tokenFromUrl) {
                 deviceToken = tokenFromUrl.trim().toUpperCase();
                 localStorage.setItem('kid_guardian_token', deviceToken);
+                // Clean URL bar so token is hidden from shoulder-surfers
+                if (window.history && window.history.replaceState) {
+                    window.history.replaceState({}, document.title, window.location.pathname);
+                }
             } else {
-                deviceToken = (localStorage.getItem('kid_guardian_token') || '').trim().toUpperCase();
+                const stored = localStorage.getItem('kid_guardian_token');
+                deviceToken = (stored && stored.trim()) ? stored.trim().toUpperCase() : '';
             }
 
             if (!deviceToken) {
+                // If stranger visits public GitHub URL, prompt for device code
+                labelToken.textContent = "MÃ: --- ✏️";
+                statusText.textContent = "Chưa kết nối thiết bị";
+                statusSub.textContent = "Vui lòng nhập Mã thiết bị để điều khiển";
+                statusDot.className = "status-dot";
                 showTokenModal();
             } else {
                 updateTokenUI();
@@ -619,31 +631,28 @@
             }, 3000);
         }
 
-        // MQTT Connection
-        const BROKERS = [
-            { host: "broker.hivemq.com", port: 8884, path: "/mqtt" },
-            { host: "broker.emqx.io", port: 8084, path: "/mqtt" }
-        ];
-        let currentBrokerIndex = 0;
+        // MQTT Connection directly to HiveMQ broker (WebSocket SSL)
+        const BROKER_HOST = "broker.hivemq.com";
+        const BROKER_PORT = 8884;
+        const BROKER_PATH = "/mqtt";
 
         function connectMQTT() {
             if (!deviceToken) return;
 
-            const broker = BROKERS[currentBrokerIndex % BROKERS.length];
             statusText.textContent = "Đang kết nối Cloud...";
             statusDot.className = "status-dot";
-            statusSub.textContent = `Máy chủ: ${broker.host}`;
+            statusSub.textContent = `Máy chủ: ${BROKER_HOST}`;
 
             const clientId = "ParentWeb_" + Math.random().toString(16).substr(2, 8);
-            mqttClient = new Paho.MQTT.Client(broker.host, broker.port, broker.path, clientId);
+            mqttClient = new Paho.MQTT.Client(BROKER_HOST, BROKER_PORT, BROKER_PATH, clientId);
 
             mqttClient.onConnectionLost = onConnectionLost;
             mqttClient.onMessageArrived = onMessageArrived;
 
             const options = {
                 useSSL: true,
-                timeout: 6,
-                keepAliveInterval: 30,
+                timeout: 5,
+                keepAliveInterval: 20,
                 cleanSession: true,
                 onSuccess: onConnectSuccess,
                 onFailure: onConnectFailure
@@ -660,13 +669,13 @@
         function onConnectSuccess() {
             isConnected = true;
             statusText.textContent = "Cloud: Đã kết nối";
-            statusSub.textContent = `Chờ thiết bị [${deviceToken}] phản hồi...`;
+            statusSub.textContent = `Đang đồng bộ thiết bị [${deviceToken}]...`;
 
             // Subscribe to status and replies from child device
             const statusTopic = `kidguardian/${deviceToken}/status`;
             const replyTopic = `kidguardian/${deviceToken}/reply`;
-            mqttClient.subscribe(statusTopic);
-            mqttClient.subscribe(replyTopic);
+            mqttClient.subscribe(statusTopic, { qos: 1 });
+            mqttClient.subscribe(replyTopic, { qos: 1 });
 
             // Request ping status immediately
             sendCommand({ action: "ping" });
@@ -675,8 +684,7 @@
         function onConnectFailure(responseObject) {
             isConnected = false;
             statusText.textContent = "Mất kết nối máy chủ";
-            currentBrokerIndex++;
-            statusSub.textContent = "Đang đổi sang máy chủ dự phòng...";
+            statusSub.textContent = "Tự động kết nối lại sau 3s...";
             statusDot.className = "status-dot";
             setTimeout(connectMQTT, 3000);
         }
@@ -685,8 +693,8 @@
             isConnected = false;
             statusDot.className = "status-dot";
             statusText.textContent = "Đã ngắt kết nối";
-            statusSub.textContent = "Tự động kết nối lại...";
-            setTimeout(connectMQTT, 3000);
+            statusSub.textContent = "Đang kết nối lại...";
+            setTimeout(connectMQTT, 2500);
         }
 
         function onMessageArrived(message) {
@@ -695,8 +703,12 @@
                 console.log("MQTT Received:", data);
 
                 if (data.status === "online" || data.event === "pong") {
-                    setDeviceOnline(true, data.battery, data.currentApp);
+                    if (data.localIp) childLocalIp = data.localIp;
+                    setDeviceOnline(true, data.battery, data.localIp);
+                } else if (data.status === "offline") {
+                    setDeviceOnline(false);
                 } else if (data.status === "executed") {
+                    if (navigator.vibrate) navigator.vibrate([30, 40, 30]);
                     showToast("✅ Bé Ngoan AI: " + (data.message || "Đã thực hiện xong lệnh!"));
                     setDeviceOnline(true);
                 }
@@ -705,41 +717,56 @@
             }
         }
 
-        function setDeviceOnline(online, battery, currentApp) {
+        function setDeviceOnline(online, battery, localIp) {
             isDeviceOnline = online;
             if (online) {
                 statusDot.className = "status-dot online";
                 statusText.textContent = "Bé đang trực tuyến 🟢";
                 let sub = "Sẵn sàng nhận lệnh tức thì";
                 if (battery) sub += ` • Pin: ${battery}%`;
+                if (localIp && localIp !== "127.0.0.1") sub += ` • Wi-Fi (${localIp})`;
                 statusSub.textContent = sub;
             } else {
                 statusDot.className = "status-dot";
                 statusText.textContent = "Thiết bị bé đang ngoại tuyến";
-                statusSub.textContent = "Chưa nhận được phản hồi";
+                statusSub.textContent = "Chờ thiết bị mở kết nối mạng...";
             }
         }
 
         function sendCommand(payloadObj) {
-            if (!isConnected || !mqttClient) {
-                showToast("⚠️ Đang kết nối tới máy chủ, vui lòng đợi...");
-                connectMQTT();
-                return;
+            if (navigator.vibrate) {
+                navigator.vibrate(40);
             }
 
-            const topic = `kidguardian/${deviceToken}/cmd`;
-            payloadObj.timestamp = Date.now();
-            const message = new Paho.MQTT.Message(JSON.stringify(payloadObj));
-            message.destinationName = topic;
-            message.qos = 1;
-            
-            try {
-                mqttClient.send(message);
-                if (payloadObj.action !== "ping") {
-                    showToast("🚀 Đã phát tín hiệu điều khiển tới điện thoại của bé!");
+            // 1. Send via Cloud MQTT (QoS 1)
+            if (isConnected && mqttClient) {
+                const topic = `kidguardian/${deviceToken}/cmd`;
+                payloadObj.timestamp = Date.now();
+                const message = new Paho.MQTT.Message(JSON.stringify(payloadObj));
+                message.destinationName = topic;
+                message.qos = 1;
+                try {
+                    mqttClient.send(message);
+                } catch (e) {
+                    console.error("MQTT send error:", e);
                 }
-            } catch (e) {
-                showToast("❌ Lỗi gửi lệnh: " + e.message);
+            }
+
+            // 2. Dual Dispatch via Local Wi-Fi if reachable (0ms instant!)
+            if (childLocalIp && childLocalIp !== "127.0.0.1") {
+                let localPath = null;
+                if (payloadObj.action === "lock") localPath = "/api/lock";
+                else if (payloadObj.action === "open_english") localPath = "/api/english";
+                else if (payloadObj.action === "open_cartoon") localPath = "/api/cartoon";
+                else if (payloadObj.action === "speak") localPath = `/api/speak?text=${encodeURIComponent(payloadObj.text || '')}`;
+
+                if (localPath) {
+                    fetch(`http://${childLocalIp}:8999${localPath}`, { mode: 'no-cors' }).catch(() => {});
+                }
+            }
+
+            if (payloadObj.action !== "ping") {
+                showToast("🚀 Đã phát tín hiệu! Thiết bị bé đang thực thi...");
             }
         }
 
@@ -796,7 +823,7 @@
             showToast("Đã lưu mã thiết bị: " + deviceToken);
         });
 
-        document.getElementById('btnRefresh').addEventListener('click', () => {
+        btnRefresh.addEventListener('click', () => {
             sendCommand({ action: "ping" });
             showToast("Đang kiểm tra kết nối thiết bị...");
         });
