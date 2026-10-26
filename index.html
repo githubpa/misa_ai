@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Bé Ngoan AI - Điều Khiển Từ Xa</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐻</text></svg>">
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <!-- Paho MQTT WebSocket Client -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js"></script>
+
+    <style>
+        :root {
+            --bg-dark: #0b0f19;
+            --card-bg: rgba(26, 34, 53, 0.85);
+            --card-border: rgba(255, 255, 255, 0.08);
+            --primary: #6366f1;
+            --primary-hover: #4f46e5;
+            --accent-pink: #ec4899;
+            --accent-green: #10b981;
+            --accent-yellow: #f59e0b;
+            --accent-red: #ef4444;
+            --text-main: #f8fafc;
+            --text-sub: #94a3b8;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        body {
+            background: var(--bg-dark);
+            background-image: 
+                radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.15) 0px, transparent 50%),
+                radial-gradient(at 100% 100%, rgba(236, 72, 153, 0.15) 0px, transparent 50%);
+            min-height: 100vh;
+            color: var(--text-main);
+            display: flex;
+            justify-content: center;
+            padding: 16px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 480px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            padding-bottom: 30px;
+        }
+
+        /* Header */
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 20px;
+            padding: 16px 20px;
+            backdrop-filter: blur(12px);
+        }
+
+        .header-brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .brand-avatar {
+            width: 46dp;
+            height: 46px;
+            background: linear-gradient(135deg, #f59e0b, #ef4444);
+            border-radius: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 26px;
+            box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
+        }
+
+        .brand-info h1 {
+            font-size: 17px;
+            font-weight: 800;
+            letter-spacing: -0.3px;
+            background: linear-gradient(90deg, #ffffff, #cbd5e1);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .brand-info p {
+            font-size: 12px;
+            color: var(--text-sub);
+            font-weight: 500;
+        }
+
+        .btn-device-token {
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid var(--card-border);
+            padding: 6px 12px;
+            border-radius: 10px;
+            color: #38bdf8;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        /* Status Badge Card */
+        .status-card {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 18px;
+            padding: 14px 18px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            backdrop-filter: blur(12px);
+        }
+
+        .status-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #94a3b8;
+            position: relative;
+        }
+
+        .status-dot.online {
+            background: var(--accent-green);
+            box-shadow: 0 0 10px var(--accent-green);
+        }
+
+        .status-dot.online::after {
+            content: '';
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            background: var(--accent-green);
+            animation: pulse 1.8s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); opacity: 0.8; }
+            100% { transform: scale(2.5); opacity: 0; }
+        }
+
+        .status-text {
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .status-time {
+            font-size: 12px;
+            color: var(--text-sub);
+        }
+
+        /* Action Buttons */
+        .section-title {
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--text-sub);
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            margin-top: 4px;
+            margin-left: 4px;
+        }
+
+        .action-card {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 20px;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            backdrop-filter: blur(12px);
+        }
+
+        .btn-action {
+            width: 100%;
+            border: none;
+            outline: none;
+            border-radius: 16px;
+            padding: 16px 20px;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .btn-action:active {
+            transform: scale(0.98);
+        }
+
+        .btn-lock {
+            background: linear-gradient(135deg, #ef4444, #dc2626);
+            color: white;
+            box-shadow: 0 6px 20px rgba(239, 68, 68, 0.35);
+        }
+
+        .btn-english {
+            background: linear-gradient(135deg, #4f46e5, #3b82f6);
+            color: white;
+            box-shadow: 0 6px 20px rgba(59, 130, 246, 0.3);
+        }
+
+        .btn-cartoon {
+            background: linear-gradient(135deg, #ec4899, #f43f5e);
+            color: white;
+            box-shadow: 0 6px 20px rgba(244, 63, 94, 0.3);
+        }
+
+        .btn-icon {
+            font-size: 26px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .btn-content {
+            text-align: left;
+            flex: 1;
+        }
+
+        .btn-title {
+            font-size: 16px;
+            font-weight: 800;
+            line-height: 1.2;
+        }
+
+        .btn-desc {
+            font-size: 12px;
+            opacity: 0.85;
+            margin-top: 3px;
+        }
+
+        .btn-arrow {
+            font-size: 18px;
+            opacity: 0.7;
+        }
+
+        /* Voice Speak Card */
+        .speak-card {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 20px;
+            padding: 18px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            backdrop-filter: blur(12px);
+        }
+
+        .speak-card h3 {
+            font-size: 15px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .quick-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .chip {
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid var(--card-border);
+            padding: 6px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            color: #e2e8f0;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+
+        .chip:active {
+            background: rgba(99, 102, 241, 0.25);
+            border-color: var(--primary);
+        }
+
+        .speak-input-group {
+            display: flex;
+            gap: 8px;
+            margin-top: 4px;
+        }
+
+        .speak-input {
+            flex: 1;
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid var(--card-border);
+            border-radius: 14px;
+            padding: 12px 14px;
+            color: white;
+            font-size: 14px;
+            outline: none;
+        }
+
+        .speak-input:focus {
+            border-color: var(--primary);
+        }
+
+        .btn-send-speak {
+            background: var(--primary);
+            border: none;
+            color: white;
+            padding: 12px 18px;
+            border-radius: 14px;
+            font-weight: 700;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        /* PWA Tip Card */
+        .pwa-tip {
+            background: rgba(56, 189, 248, 0.08);
+            border: 1px dashed rgba(56, 189, 248, 0.3);
+            border-radius: 16px;
+            padding: 12px 16px;
+            font-size: 12px;
+            color: #bae6fd;
+            line-height: 1.5;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        /* Toast */
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            background: #1e293b;
+            color: white;
+            padding: 12px 20px;
+            border-radius: 30px;
+            font-size: 13px;
+            font-weight: 600;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+            border: 1px solid var(--card-border);
+            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+            z-index: 100;
+            pointer-events: none;
+            opacity: 0;
+            text-align: center;
+            white-space: nowrap;
+        }
+
+        .toast.show {
+            transform: translateX(-50%) translateY(0);
+            opacity: 1;
+        }
+
+        /* Modal */
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(8px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            z-index: 99;
+        }
+
+        .modal-overlay.active {
+            display: flex;
+        }
+
+        .modal-card {
+            background: #1a2235;
+            border: 1px solid var(--card-border);
+            border-radius: 24px;
+            padding: 24px;
+            width: 100%;
+            max-width: 360px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.6);
+        }
+
+        .modal-card h2 {
+            font-size: 18px;
+            font-weight: 800;
+        }
+
+        .modal-card p {
+            font-size: 13px;
+            color: var(--text-sub);
+            line-height: 1.5;
+        }
+
+        .modal-input {
+            background: #0f172a;
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 12px 14px;
+            color: white;
+            font-size: 16px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            text-align: center;
+            outline: none;
+        }
+
+        .modal-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .btn-modal {
+            flex: 1;
+            padding: 12px;
+            border-radius: 12px;
+            border: none;
+            font-weight: 700;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        .btn-modal-primary {
+            background: var(--primary);
+            color: white;
+        }
+
+        .btn-modal-cancel {
+            background: rgba(255, 255, 255, 0.08);
+            color: var(--text-sub);
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <!-- Top Header -->
+        <header class="header">
+            <div class="header-brand">
+                <div class="brand-avatar">🐻</div>
+                <div class="brand-info">
+                    <h1>Bé Ngoan AI</h1>
+                    <p>Điều Khiển Phụ Huynh</p>
+                </div>
+            </div>
+            <button class="btn-device-token" id="btnChangeToken">
+                <span id="labelToken">MÃ: ---</span> ✏️
+            </button>
+        </header>
+
+        <!-- Status Card -->
+        <div class="status-card">
+            <div class="status-left">
+                <div class="status-dot" id="statusDot"></div>
+                <div>
+                    <div class="status-text" id="statusText">Đang kết nối Cloud...</div>
+                    <div class="status-time" id="statusSub">Chờ tín hiệu máy bé</div>
+                </div>
+            </div>
+            <button class="chip" id="btnRefresh" style="padding: 4px 10px;">🔄 Làm mới</button>
+        </div>
+
+        <!-- Main Action Buttons -->
+        <div class="section-title">Hành Động Khẩn Cấp</div>
+        <div class="action-card">
+            <!-- Lock Button -->
+            <button class="btn-action btn-lock" id="btnActionLock">
+                <div class="btn-icon">🔒</div>
+                <div class="btn-content">
+                    <div class="btn-title">KHÓA MÁY NGAY</div>
+                    <div class="btn-desc">Mascot Misa báo buồn ngủ & đếm ngược 10s</div>
+                </div>
+                <div class="btn-arrow">▶</div>
+            </button>
+
+            <!-- Open English -->
+            <button class="btn-action btn-english" id="btnActionEnglish">
+                <div class="btn-icon">📚</div>
+                <div class="btn-content">
+                    <div class="btn-title">MỞ HỌC TIẾNG ANH</div>
+                    <div class="btn-desc">Mở ứng dụng học tập đã cài (Babilala...)</div>
+                </div>
+                <div class="btn-arrow">▶</div>
+            </button>
+
+            <!-- Open Cartoon -->
+            <button class="btn-action btn-cartoon" id="btnActionCartoon">
+                <div class="btn-icon">🍿</div>
+                <div class="btn-content">
+                    <div class="btn-title">MỞ XEM HOẠT HÌNH</div>
+                    <div class="btn-desc">Mở YouTube Kids giải trí cho bé</div>
+                </div>
+                <div class="btn-arrow">▶</div>
+            </button>
+        </div>
+
+        <!-- Send Mascot Voice Message -->
+        <div class="section-title">Gửi Lời Nhắc Nhở Cho Bé</div>
+        <div class="speak-card">
+            <h3>📢 Misa Nói Thay Lời Ba Mẹ</h3>
+            <div class="quick-chips">
+                <span class="chip" data-text="Con ơi đi tắm đi nhé!">🛁 Đi tắm thôi con</span>
+                <span class="chip" data-text="Uống nước đi con yêu ơi!">💧 Uống nước nào</span>
+                <span class="chip" data-text="Đến giờ ăn cơm rồi bạn nhỏ!">🍚 Đến giờ ăn cơm</span>
+                <span class="chip" data-text="Nghỉ mắt một chút đi bạn nhỏ ơi!">👀 Cho mắt nghỉ ngơi</span>
+            </div>
+            <div class="speak-input-group">
+                <input type="text" class="speak-input" id="inputCustomSpeak" placeholder="Nhập câu Misa sẽ nói to cho bé...">
+                <button class="btn-send-speak" id="btnSendSpeak">Gửi</button>
+            </div>
+        </div>
+
+        <!-- PWA Shortcut Tip -->
+        <div class="pwa-tip">
+            <span>💡</span>
+            <div><strong>Mẹo tiện lợi:</strong> Chọn <em>"Thêm vào Màn hình chính"</em> (Add to Home Screen) trong trình duyệt để mở điều khiển chỉ bằng 1 chạm như một App riêng!</div>
+        </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div class="toast" id="toast">Thông báo</div>
+
+    <!-- Device Token Modal -->
+    <div class="modal-overlay" id="modalToken">
+        <div class="modal-card">
+            <h2>Mã Kết Nối Thiết Bị</h2>
+            <p>Nhập mã thiết bị hiển thị trong ứng dụng <strong>Bé Ngoan AI</strong> trên điện thoại của con (ví dụ: <code>89AB12CD</code>):</p>
+            <input type="text" class="modal-input" id="inputModalToken" placeholder="MÃ THIẾT BỊ" maxlength="12">
+            <div class="modal-actions">
+                <button class="btn-modal btn-modal-cancel" id="btnCancelModal">Hủy</button>
+                <button class="btn-modal btn-modal-primary" id="btnSaveModal">Lưu Mã</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // State
+        let deviceToken = '';
+        let mqttClient = null;
+        let isConnected = false;
+        let isDeviceOnline = false;
+
+        // DOM elements
+        const labelToken = document.getElementById('labelToken');
+        const statusDot = document.getElementById('statusDot');
+        const statusText = document.getElementById('statusText');
+        const statusSub = document.getElementById('statusSub');
+        const btnChangeToken = document.getElementById('btnChangeToken');
+        const modalToken = document.getElementById('modalToken');
+        const inputModalToken = document.getElementById('inputModalToken');
+        const btnSaveModal = document.getElementById('btnSaveModal');
+        const btnCancelModal = document.getElementById('btnCancelModal');
+        const toastEl = document.getElementById('toast');
+
+        // Init token from URL or LocalStorage
+        function initDeviceToken() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const tokenFromUrl = urlParams.get('device') || urlParams.get('token');
+            if (tokenFromUrl) {
+                deviceToken = tokenFromUrl.trim().toUpperCase();
+                localStorage.setItem('kid_guardian_token', deviceToken);
+            } else {
+                deviceToken = (localStorage.getItem('kid_guardian_token') || '').trim().toUpperCase();
+            }
+
+            if (!deviceToken) {
+                showTokenModal();
+            } else {
+                updateTokenUI();
+                connectMQTT();
+            }
+        }
+
+        function updateTokenUI() {
+            labelToken.textContent = `MÃ: ${deviceToken}`;
+            inputModalToken.value = deviceToken;
+        }
+
+        function showTokenModal() {
+            modalToken.classList.add('active');
+            inputModalToken.focus();
+        }
+
+        function hideTokenModal() {
+            modalToken.classList.remove('active');
+        }
+
+        function showToast(msg) {
+            toastEl.textContent = msg;
+            toastEl.classList.add('show');
+            setTimeout(() => {
+                toastEl.classList.remove('show');
+            }, 3000);
+        }
+
+        // MQTT Connection
+        function connectMQTT() {
+            if (!deviceToken) return;
+
+            statusText.textContent = "Đang kết nối Cloud...";
+            statusDot.className = "status-dot";
+            statusSub.textContent = "Broker: broker.hivemq.com";
+
+            const clientId = "ParentWeb_" + Math.random().toString(16).substr(2, 8);
+            // HiveMQ public WebSocket port
+            mqttClient = new Paho.MQTT.Client("broker.hivemq.com", 8884, clientId);
+
+            mqttClient.onConnectionLost = onConnectionLost;
+            mqttClient.onMessageArrived = onMessageArrived;
+
+            const options = {
+                useSSL: true,
+                timeout: 5,
+                keepAliveInterval: 30,
+                cleanSession: true,
+                onSuccess: onConnectSuccess,
+                onFailure: onConnectFailure
+            };
+
+            try {
+                mqttClient.connect(options);
+            } catch (e) {
+                console.error("Connect error:", e);
+                statusText.textContent = "Lỗi kết nối";
+            }
+        }
+
+        function onConnectSuccess() {
+            isConnected = true;
+            statusText.textContent = "Cloud: Đã kết nối";
+            statusSub.textContent = "Đang kiểm tra máy của bé...";
+
+            // Subscribe to status and replies from child device
+            const statusTopic = `kidguardian/${deviceToken}/status`;
+            const replyTopic = `kidguardian/${deviceToken}/reply`;
+            mqttClient.subscribe(statusTopic);
+            mqttClient.subscribe(replyTopic);
+
+            // Request ping status
+            sendCommand({ action: "ping" });
+        }
+
+        function onConnectFailure(responseObject) {
+            isConnected = false;
+            statusText.textContent = "Mất kết nối Cloud";
+            statusSub.textContent = "Đang thử lại...";
+            statusDot.className = "status-dot";
+            setTimeout(connectMQTT, 5000);
+        }
+
+        function onConnectionLost(responseObject) {
+            isConnected = false;
+            statusDot.className = "status-dot";
+            statusText.textContent = "Đã ngắt kết nối";
+            statusSub.textContent = "Tự động kết nối lại...";
+            setTimeout(connectMQTT, 3000);
+        }
+
+        function onMessageArrived(message) {
+            try {
+                const data = JSON.parse(message.payloadString);
+                console.log("MQTT Received:", data);
+
+                if (data.status === "online" || data.event === "pong") {
+                    setDeviceOnline(true, data.battery, data.currentApp);
+                } else if (data.status === "executed") {
+                    showToast("✅ Bé Ngoan AI: " + (data.message || "Đã thực hiện xong lệnh!"));
+                    setDeviceOnline(true);
+                }
+            } catch (e) {
+                console.error("Parse message error:", e);
+            }
+        }
+
+        function setDeviceOnline(online, battery, currentApp) {
+            isDeviceOnline = online;
+            if (online) {
+                statusDot.className = "status-dot online";
+                statusText.textContent = "Bé đang trực tuyến 🟢";
+                let sub = "Sẵn sàng nhận lệnh tức thì";
+                if (battery) sub += ` • Pin: ${battery}%`;
+                statusSub.textContent = sub;
+            } else {
+                statusDot.className = "status-dot";
+                statusText.textContent = "Thiết bị bé đang ngoại tuyến";
+                statusSub.textContent = "Chưa nhận được phản hồi";
+            }
+        }
+
+        function sendCommand(payloadObj) {
+            if (!isConnected || !mqttClient) {
+                showToast("⚠️ Đang kết nối tới máy chủ, vui lòng đợi...");
+                connectMQTT();
+                return;
+            }
+
+            const topic = `kidguardian/${deviceToken}/cmd`;
+            payloadObj.timestamp = Date.now();
+            const message = new Paho.MQTT.Message(JSON.stringify(payloadObj));
+            message.destinationName = topic;
+            message.qos = 1;
+            
+            try {
+                mqttClient.send(message);
+                if (payloadObj.action !== "ping") {
+                    showToast("🚀 Đã phát tín hiệu điều khiển tới điện thoại của bé!");
+                }
+            } catch (e) {
+                showToast("❌ Lỗi gửi lệnh: " + e.message);
+            }
+        }
+
+        // Action Handlers
+        document.getElementById('btnActionLock').addEventListener('click', () => {
+            if (confirm("Xác nhận: Bạn muốn khóa điện thoại của bé ngay bây giờ? Misa sẽ đếm ngược 10 giây trước khi khóa.")) {
+                sendCommand({ action: "lock" });
+            }
+        });
+
+        document.getElementById('btnActionEnglish').addEventListener('click', () => {
+            sendCommand({ action: "open_english" });
+        });
+
+        document.getElementById('btnActionCartoon').addEventListener('click', () => {
+            sendCommand({ action: "open_cartoon" });
+        });
+
+        document.getElementById('btnSendSpeak').addEventListener('click', () => {
+            const text = document.getElementById('inputCustomSpeak').value.trim();
+            if (text) {
+                sendCommand({ action: "speak", text: text });
+                document.getElementById('inputCustomSpeak').value = '';
+                showToast(`📢 Đã gửi: "${text}"`);
+            }
+        });
+
+        // Quick Chips
+        document.querySelectorAll('.chip[data-text]').forEach(chip => {
+            chip.addEventListener('click', () => {
+                const text = chip.getAttribute('data-text');
+                sendCommand({ action: "speak", text: text });
+                showToast(`📢 Đã gửi: "${text}"`);
+            });
+        });
+
+        // Token Modal Handlers
+        btnChangeToken.addEventListener('click', showTokenModal);
+        btnCancelModal.addEventListener('click', () => {
+            if (deviceToken) hideTokenModal();
+        });
+
+        btnSaveModal.addEventListener('click', () => {
+            const val = inputModalToken.value.trim().toUpperCase();
+            if (val.length < 3) {
+                alert("Vui lòng nhập mã thiết bị hợp lệ (ít nhất 3 ký tự)!");
+                return;
+            }
+            deviceToken = val;
+            localStorage.setItem('kid_guardian_token', deviceToken);
+            updateTokenUI();
+            hideTokenModal();
+            connectMQTT();
+            showToast("Đã lưu mã thiết bị: " + deviceToken);
+        });
+
+        document.getElementById('btnRefresh').addEventListener('click', () => {
+            sendCommand({ action: "ping" });
+            showToast("Đang kiểm tra kết nối thiết bị...");
+        });
+
+        // Run
+        initDeviceToken();
+    </script>
+</body>
+</html>
