@@ -617,26 +617,30 @@
             setTimeout(() => {
                 toastEl.classList.remove('show');
             }, 3000);
-        }
-
         // MQTT Connection
+        const BROKERS = [
+            { host: "broker.hivemq.com", port: 8884, path: "/mqtt" },
+            { host: "broker.emqx.io", port: 8084, path: "/mqtt" }
+        ];
+        let currentBrokerIndex = 0;
+
         function connectMQTT() {
             if (!deviceToken) return;
 
+            const broker = BROKERS[currentBrokerIndex % BROKERS.length];
             statusText.textContent = "Đang kết nối Cloud...";
             statusDot.className = "status-dot";
-            statusSub.textContent = "Broker: broker.hivemq.com";
+            statusSub.textContent = `Máy chủ: ${broker.host}`;
 
             const clientId = "ParentWeb_" + Math.random().toString(16).substr(2, 8);
-            // HiveMQ public WebSocket port
-            mqttClient = new Paho.MQTT.Client("broker.hivemq.com", 8884, clientId);
+            mqttClient = new Paho.MQTT.Client(broker.host, broker.port, broker.path, clientId);
 
             mqttClient.onConnectionLost = onConnectionLost;
             mqttClient.onMessageArrived = onMessageArrived;
 
             const options = {
                 useSSL: true,
-                timeout: 5,
+                timeout: 6,
                 keepAliveInterval: 30,
                 cleanSession: true,
                 onSuccess: onConnectSuccess,
@@ -647,14 +651,14 @@
                 mqttClient.connect(options);
             } catch (e) {
                 console.error("Connect error:", e);
-                statusText.textContent = "Lỗi kết nối";
+                statusText.textContent = "Lỗi khởi tạo kết nối";
             }
         }
 
         function onConnectSuccess() {
             isConnected = true;
             statusText.textContent = "Cloud: Đã kết nối";
-            statusSub.textContent = "Đang kiểm tra máy của bé...";
+            statusSub.textContent = `Chờ thiết bị [${deviceToken}] phản hồi...`;
 
             // Subscribe to status and replies from child device
             const statusTopic = `kidguardian/${deviceToken}/status`;
@@ -662,16 +666,17 @@
             mqttClient.subscribe(statusTopic);
             mqttClient.subscribe(replyTopic);
 
-            // Request ping status
+            // Request ping status immediately
             sendCommand({ action: "ping" });
         }
 
         function onConnectFailure(responseObject) {
             isConnected = false;
-            statusText.textContent = "Mất kết nối Cloud";
-            statusSub.textContent = "Đang thử lại...";
+            statusText.textContent = "Mất kết nối máy chủ";
+            currentBrokerIndex++;
+            statusSub.textContent = "Đang đổi sang máy chủ dự phòng...";
             statusDot.className = "status-dot";
-            setTimeout(connectMQTT, 5000);
+            setTimeout(connectMQTT, 3000);
         }
 
         function onConnectionLost(responseObject) {
