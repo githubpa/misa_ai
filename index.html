@@ -562,10 +562,9 @@
     <script>
         // State
         let deviceToken = '';
-        let mqttClient = null;
-        let isConnected = false;
-        let isDeviceOnline = false;
-        let childLocalIp = null;
+        let childLocalIp = localStorage.getItem('kid_guardian_local_ip') || null;
+        let lastBattery = null;
+        let lastReplyTime = 0;
 
         // DOM elements
         const labelToken = document.getElementById('labelToken');
@@ -580,6 +579,12 @@
         const toastEl = document.getElementById('toast');
         const btnRefresh = document.getElementById('btnRefresh');
 
+        // Active-Active Dual Cloud Brokers (HiveMQ + EMQX Simultaneously)
+        const BROKERS = [
+            { name: "HiveMQ", host: "broker.hivemq.com", port: 8884, path: "/mqtt", client: null, connected: false },
+            { name: "EMQX", host: "broker.emqx.io", port: 8084, path: "/mqtt", client: null, connected: false }
+        ];
+
         // Init token from URL or LocalStorage (Secure: No hardcoded token in public code!)
         function initDeviceToken() {
             const urlParams = new URLSearchParams(window.location.search);
@@ -587,7 +592,6 @@
             if (tokenFromUrl) {
                 deviceToken = tokenFromUrl.trim().toUpperCase();
                 localStorage.setItem('kid_guardian_token', deviceToken);
-                // Clean URL bar so token is hidden from shoulder-surfers
                 if (window.history && window.history.replaceState) {
                     window.history.replaceState({}, document.title, window.location.pathname);
                 }
@@ -597,7 +601,6 @@
             }
 
             if (!deviceToken) {
-                // If stranger visits public GitHub URL, prompt for device code
                 labelToken.textContent = "MÃ: --- ✏️";
                 statusText.textContent = "Chưa kết nối thiết bị";
                 statusSub.textContent = "Vui lòng nhập Mã thiết bị để điều khiển";
@@ -605,7 +608,7 @@
                 showTokenModal();
             } else {
                 updateTokenUI();
-                connectMQTT();
+                connectAllChannels();
             }
         }
 
@@ -631,106 +634,181 @@
             }, 3000);
         }
 
-        // MQTT Connection directly to HiveMQ broker (WebSocket SSL)
-        const BROKER_HOST = "broker.hivemq.com";
-        const BROKER_PORT = 8884;
-        const BROKER_PATH = "/mqtt";
-
-        function connectMQTT() {
+        function connectAllChannels() {
             if (!deviceToken) return;
+            statusText.textContent = "Đang kết nối đa tầng...";
+            statusSub.textContent = `Thiết bị [${deviceToken}] • HiveMQ + EMQX`;
 
-            statusText.textContent = "Đang kết nối Cloud...";
-            statusDot.className = "status-dot";
-            statusSub.textContent = `Máy chủ: ${BROKER_HOST}`;
+            // 1. Connect to BOTH Cloud Brokers in parallel
+            BROKERS.forEach(broker => connectSingleBroker(broker));
 
-            const clientId = "ParentWeb_" + Math.random().toString(16).substr(2, 8);
-            mqttClient = new Paho.MQTT.Client(BROKER_HOST, BROKER_PORT, BROKER_PATH, clientId);
+            // 2. Also probe local device directly (127.0.0.1 & saved LAN IP)
+            probeLocalDevice();
+        }
 
-            mqttClient.onConnectionLost = onConnectionLost;
-            mqttClient.onMessageArrived = onMessageArrived;
+        function connectSingleBroker(broker) {
+            if (!deviceToken) return;
+            try {
+                if (broker.client && broker.connected) {
+                    subscribeAndPing(broker);
+                    return;
+                }
+            } catch (e) {}
+
+            const clientId = `Parent_${broker.name}_${Math.random().toString(16).substr(2, 8)}`;
+            const client = new Paho.MQTT.Client(broker.host, broker.port, broker.path, clientId);
+            broker.client = client;
+            broker.connected = false;
+
+            client.onConnectionLost = () => {
+                broker.connected = false;
+                refreshOverallStatusUI();
+                setTimeout(() => connectSingleBroker(broker), 2500);
+            };
+
+            client.onMessageArrived = (message) => {
+                handleMqttMessage(broker, message);
+            };
 
             const options = {
                 useSSL: true,
                 timeout: 5,
                 keepAliveInterval: 20,
                 cleanSession: true,
-                onSuccess: onConnectSuccess,
-                onFailure: onConnectFailure
+                onSuccess: () => {
+                    broker.connected = true;
+                    refreshOverallStatusUI();
+                    subscribeAndPing(broker);
+                },
+                onFailure: () => {
+                    broker.connected = false;
+                    refreshOverallStatusUI();
+                    setTimeout(() => connectSingleBroker(broker), 3000);
+                }
             };
 
             try {
-                mqttClient.connect(options);
+                client.connect(options);
             } catch (e) {
-                console.error("Connect error:", e);
-                statusText.textContent = "Lỗi khởi tạo kết nối";
+                setTimeout(() => connectSingleBroker(broker), 3000);
             }
         }
 
-        function onConnectSuccess() {
-            isConnected = true;
-            statusText.textContent = "Cloud: Đã kết nối";
-            statusSub.textContent = `Đang đồng bộ thiết bị [${deviceToken}]...`;
+        function subscribeAndPing(broker) {
+            if (!broker.client || !broker.connected || !deviceToken) return;
+            try {
+                const statusTopic = `kidguardian/${deviceToken}/status`;
+                const replyTopic = `kidguardian/${deviceToken}/reply`;
+                broker.client.subscribe(statusTopic, { qos: 1 });
+                broker.client.subscribe(replyTopic, { qos: 1 });
 
-            // Subscribe to status and replies from child device
-            const statusTopic = `kidguardian/${deviceToken}/status`;
-            const replyTopic = `kidguardian/${deviceToken}/reply`;
-            mqttClient.subscribe(statusTopic, { qos: 1 });
-            mqttClient.subscribe(replyTopic, { qos: 1 });
-
-            // Request ping status immediately
-            sendCommand({ action: "ping" });
+                // Send immediate ping
+                const pingMsg = new Paho.MQTT.Message(JSON.stringify({
+                    action: "ping",
+                    cmdId: "ping_" + Date.now(),
+                    timestamp: Date.now()
+                }));
+                pingMsg.destinationName = `kidguardian/${deviceToken}/cmd`;
+                pingMsg.qos = 1;
+                broker.client.send(pingMsg);
+            } catch (e) {
+                console.warn("Subscribe error:", e);
+            }
         }
 
-        function onConnectFailure(responseObject) {
-            isConnected = false;
-            statusText.textContent = "Mất kết nối máy chủ";
-            statusSub.textContent = "Tự động kết nối lại sau 3s...";
-            statusDot.className = "status-dot";
-            setTimeout(connectMQTT, 3000);
-        }
-
-        function onConnectionLost(responseObject) {
-            isConnected = false;
-            statusDot.className = "status-dot";
-            statusText.textContent = "Đã ngắt kết nối";
-            statusSub.textContent = "Đang kết nối lại...";
-            setTimeout(connectMQTT, 2500);
-        }
-
-        function onMessageArrived(message) {
+        function handleMqttMessage(broker, message) {
             try {
                 const data = JSON.parse(message.payloadString);
-                console.log("MQTT Received:", data);
+                console.log(`[${broker.name}] MQTT Received:`, data);
 
                 if (data.status === "online" || data.event === "pong") {
-                    if (data.localIp) childLocalIp = data.localIp;
-                    setDeviceOnline(true, data.battery, data.localIp);
+                    if (data.localIp && data.localIp !== "127.0.0.1") {
+                        childLocalIp = data.localIp;
+                        localStorage.setItem('kid_guardian_local_ip', childLocalIp);
+                    }
+                    if (data.battery) lastBattery = data.battery;
+                    setDeviceOnlineUI(lastBattery, childLocalIp);
                 } else if (data.status === "offline") {
-                    setDeviceOnline(false);
+                    // Self-heal stale LWT offline retained message from older versions!
+                    healStaleOfflineRetainedMessage(broker);
+                    // Send a fresh ping to verify live device
+                    subscribeAndPing(broker);
+                    refreshOverallStatusUI();
                 } else if (data.status === "executed") {
-                    if (navigator.vibrate) navigator.vibrate([30, 40, 30]);
-                    showToast("✅ Bé Ngoan AI: " + (data.message || "Đã thực hiện xong lệnh!"));
-                    setDeviceOnline(true);
+                    const now = Date.now();
+                    if (now - lastReplyTime > 1200) {
+                        lastReplyTime = now;
+                        if (navigator.vibrate) navigator.vibrate([30, 40, 30]);
+                        showToast("✅ Bé Ngoan AI: " + (data.message || "Đã thực hiện xong lệnh!"));
+                    }
+                    setDeviceOnlineUI(lastBattery, childLocalIp);
                 }
             } catch (e) {
                 console.error("Parse message error:", e);
             }
         }
 
-        function setDeviceOnline(online, battery, localIp) {
-            isDeviceOnline = online;
-            if (online) {
-                statusDot.className = "status-dot online";
-                statusText.textContent = "Bé đang trực tuyến 🟢";
-                let sub = "Sẵn sàng nhận lệnh tức thì";
-                if (battery) sub += ` • Pin: ${battery}%`;
-                if (localIp && localIp !== "127.0.0.1") sub += ` • Wi-Fi (${localIp})`;
-                statusSub.textContent = sub;
+        function healStaleOfflineRetainedMessage(broker) {
+            try {
+                if (!broker.client || !broker.connected || !deviceToken) return;
+                const healPayload = JSON.stringify({
+                    status: "online",
+                    deviceToken: deviceToken,
+                    timestamp: Date.now()
+                });
+                const msg = new Paho.MQTT.Message(healPayload);
+                msg.destinationName = `kidguardian/${deviceToken}/status`;
+                msg.qos = 1;
+                msg.retained = true;
+                broker.client.send(msg);
+            } catch (e) {}
+        }
+
+        function probeLocalDevice() {
+            const targets = ["127.0.0.1"];
+            if (childLocalIp && childLocalIp !== "127.0.0.1") {
+                targets.push(childLocalIp);
+            }
+            targets.forEach(ip => {
+                fetch(`http://${ip}:8999/api/status`, { mode: 'cors' })
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data && data.status === "online") {
+                            if (data.ip && data.ip !== "127.0.0.1") {
+                                childLocalIp = data.ip;
+                                localStorage.setItem('kid_guardian_local_ip', childLocalIp);
+                            } else {
+                                childLocalIp = ip;
+                            }
+                            setDeviceOnlineUI(lastBattery, childLocalIp);
+                        }
+                    })
+                    .catch(() => {});
+            });
+        }
+
+        function refreshOverallStatusUI() {
+            const connectedBrokers = BROKERS.filter(b => b.connected).map(b => b.name);
+            if (connectedBrokers.length > 0) {
+                setDeviceOnlineUI(lastBattery, childLocalIp, connectedBrokers.join(" + "));
             } else {
                 statusDot.className = "status-dot";
-                statusText.textContent = "Thiết bị bé đang ngoại tuyến";
-                statusSub.textContent = "Chờ thiết bị mở kết nối mạng...";
+                statusText.textContent = "Đang tự động kết nối lại...";
+                statusSub.textContent = "Đang đồng bộ kênh điều khiển...";
             }
+        }
+
+        function setDeviceOnlineUI(battery, localIp, brokerLabel) {
+            statusDot.className = "status-dot online";
+            statusText.textContent = "Bé đang trực tuyến 🟢";
+            let sub = "Sẵn sàng nhận lệnh tức thì";
+            if (battery) sub += ` • Pin: ${battery}%`;
+            if (localIp && localIp !== "127.0.0.1") {
+                sub += ` • Wi-Fi (${localIp})`;
+            } else if (brokerLabel) {
+                sub += ` • Cloud (${brokerLabel})`;
+            }
+            statusSub.textContent = sub;
         }
 
         function sendCommand(payloadObj) {
@@ -738,35 +816,49 @@
                 navigator.vibrate(40);
             }
 
-            // 1. Send via Cloud MQTT (QoS 1)
-            if (isConnected && mqttClient) {
-                const topic = `kidguardian/${deviceToken}/cmd`;
-                payloadObj.timestamp = Date.now();
-                const message = new Paho.MQTT.Message(JSON.stringify(payloadObj));
-                message.destinationName = topic;
-                message.qos = 1;
-                try {
-                    mqttClient.send(message);
-                } catch (e) {
-                    console.error("MQTT send error:", e);
-                }
-            }
+            const cmdId = `cmd_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+            payloadObj.cmdId = cmdId;
+            payloadObj.timestamp = Date.now();
+            const jsonStr = JSON.stringify(payloadObj);
+            const topic = `kidguardian/${deviceToken}/cmd`;
 
-            // 2. Dual Dispatch via Local Wi-Fi if reachable (0ms instant!)
-            if (childLocalIp && childLocalIp !== "127.0.0.1") {
-                let localPath = null;
-                if (payloadObj.action === "lock") localPath = "/api/lock";
-                else if (payloadObj.action === "open_english") localPath = "/api/english";
-                else if (payloadObj.action === "open_cartoon") localPath = "/api/cartoon";
-                else if (payloadObj.action === "speak") localPath = `/api/speak?text=${encodeURIComponent(payloadObj.text || '')}`;
+            let sentCloudCount = 0;
 
-                if (localPath) {
-                    fetch(`http://${childLocalIp}:8999${localPath}`, { mode: 'no-cors' }).catch(() => {});
+            // 1. Blast simultaneously across ALL connected Cloud Brokers (HiveMQ + EMQX)
+            BROKERS.forEach(broker => {
+                if (broker.connected && broker.client) {
+                    try {
+                        const message = new Paho.MQTT.Message(jsonStr);
+                        message.destinationName = topic;
+                        message.qos = 1;
+                        broker.client.send(message);
+                        sentCloudCount++;
+                    } catch (e) {
+                        console.warn(`[${broker.name}] Send error:`, e);
+                    }
+                } else {
+                    connectSingleBroker(broker);
                 }
+            });
+
+            // 2. Blast simultaneously via Local HTTP (127.0.0.1 + Child LAN IP) for 0ms local execution
+            let localPath = null;
+            if (payloadObj.action === "lock") localPath = "/api/lock";
+            else if (payloadObj.action === "open_english") localPath = "/api/english";
+            else if (payloadObj.action === "open_cartoon") localPath = "/api/cartoon";
+            else if (payloadObj.action === "speak") localPath = `/api/speak?text=${encodeURIComponent(payloadObj.text || '')}`;
+            else if (payloadObj.action === "ping") localPath = "/api/status";
+
+            if (localPath) {
+                const ips = new Set(["127.0.0.1"]);
+                if (childLocalIp) ips.add(childLocalIp);
+                ips.forEach(ip => {
+                    fetch(`http://${ip}:8999${localPath}`, { mode: 'no-cors' }).catch(() => {});
+                });
             }
 
             if (payloadObj.action !== "ping") {
-                showToast("🚀 Đã phát tín hiệu! Thiết bị bé đang thực thi...");
+                showToast("🚀 Đã phát lệnh đa kênh! Thiết bị bé đang thực thi...");
             }
         }
 
@@ -819,14 +911,24 @@
             localStorage.setItem('kid_guardian_token', deviceToken);
             updateTokenUI();
             hideTokenModal();
-            connectMQTT();
+            connectAllChannels();
             showToast("Đã lưu mã thiết bị: " + deviceToken);
         });
 
         btnRefresh.addEventListener('click', () => {
+            connectAllChannels();
             sendCommand({ action: "ping" });
-            showToast("Đang kiểm tra kết nối thiết bị...");
+            showToast("🔄 Đang đồng bộ tức thì với thiết bị của bé...");
         });
+
+        // Periodic background keepalive check every 15s while web is open
+        setInterval(() => {
+            if (deviceToken) {
+                BROKERS.forEach(b => {
+                    if (!b.connected) connectSingleBroker(b);
+                });
+            }
+        }, 15000);
 
         // Run
         initDeviceToken();
